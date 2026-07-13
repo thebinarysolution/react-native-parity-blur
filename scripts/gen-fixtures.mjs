@@ -1,0 +1,310 @@
+// Generator for test/pipeline-fixtures.json.
+// Replicates the LOCKED canonical formulas independently of the TS source so
+// the jest suite cross-checks the implementation against these vectors.
+// Run: node scripts/gen-fixtures.mjs  (writes test/pipeline-fixtures.json)
+
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const OUT = resolve(__dirname, '../test/pipeline-fixtures.json');
+
+// --- locked constants (mirror src/pipeline/constants.ts) ---
+const SLOPE = 0.57735;
+const INTERCEPT = 0.5;
+const K = 3;
+const MIN_SIGMA_SNAPSHOT = 1.0;
+const SMALL_AREA = 256 * 256;
+const QMAX = { high: 2, balanced: 4, performance: 8 };
+const LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
+const FACTORS = [8, 4, 2, 1];
+
+// --- formula replicas ---
+const sigmaPxFromDp = (dp, scale) =>
+  !Number.isFinite(dp) || dp <= 0 || !Number.isFinite(scale) || scale <= 0
+    ? 0
+    : dp * scale;
+
+const sigmaSnapshotFromPx = (spx, d) =>
+  !Number.isFinite(spx) || spx <= 0 ? 0 : spx / d;
+
+const radiusForSigma = (sig) =>
+  !Number.isFinite(sig) || sig <= INTERCEPT
+    ? { noBlur: true, radiusPlatform: 0 }
+    : { noBlur: false, radiusPlatform: (sig - INTERCEPT) / SLOPE };
+
+const largestFactorAtMost = (cap) => {
+  for (const f of FACTORS) if (f <= cap) return f;
+  return 1;
+};
+const autoDownsample = (spx, area, q) => {
+  if (!Number.isFinite(spx) || spx <= 0) return 1;
+  const maxByQuality = QMAX[q];
+  const maxBySigma = Math.floor(spx / MIN_SIGMA_SNAPSHOT);
+  const a = Number.isFinite(area) ? area : 0;
+  const maxByArea = a < SMALL_AREA ? 2 : 8;
+  return largestFactorAtMost(Math.min(maxByQuality, maxBySigma, maxByArea));
+};
+
+const supportMarginPx = (spx) =>
+  !Number.isFinite(spx) || spx <= 0 ? 0 : Math.ceil(K * spx);
+
+const intersect = (a, b) => {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.width, b.x + b.width);
+  const y1 = Math.min(a.y + a.height, b.y + b.height);
+  const width = Math.max(0, x1 - x0);
+  const height = Math.max(0, y1 - y0);
+  return width === 0 || height === 0
+    ? { x: x0, y: y0, width: 0, height: 0 }
+    : { x: x0, y: y0, width, height };
+};
+const expandCaptureRect = (v, t, spx) => {
+  const m = supportMarginPx(spx);
+  return intersect(
+    { x: v.x - m, y: v.y - m, width: v.width + 2 * m, height: v.height + 2 * m },
+    t
+  );
+};
+const snapshotRectFor = (c, d) => {
+  const x = Math.floor(c.x / d);
+  const y = Math.floor(c.y / d);
+  const farX = Math.ceil((c.x + c.width) / d);
+  const farY = Math.ceil((c.y + c.height) / d);
+  return { x, y, width: Math.max(0, farX - x), height: Math.max(0, farY - y) };
+};
+const cropRectFor = (v, s, d) => ({
+  x: v.x / d - s.x,
+  y: v.y / d - s.y,
+  width: v.width / d,
+  height: v.height / d,
+});
+
+const saturationMatrix = (s) => {
+  const t = 1 - s;
+  const { r: lr, g: lg, b: lb } = LUMA;
+  return [
+    t * lr + s, t * lg, t * lb, 0, 0,
+    t * lr, t * lg + s, t * lb, 0, 0,
+    t * lr, t * lg, t * lb + s, 0, 0,
+    0, 0, 0, 1, 0,
+  ];
+};
+
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const parseColor = (input) => {
+  if (input == null) return { r: 0, g: 0, b: 0, a: 0 };
+  const s = String(input).trim().toLowerCase();
+  if (s === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
+  const hp = (h) => parseInt(h, 16) / 255;
+  if (s.startsWith('#')) {
+    const hex = s.slice(1);
+    if (hex.length === 3 || hex.length === 4)
+      return {
+        r: hp(hex[0] + hex[0]),
+        g: hp(hex[1] + hex[1]),
+        b: hp(hex[2] + hex[2]),
+        a: hex.length === 4 ? hp(hex[3] + hex[3]) : 1,
+      };
+    if (hex.length === 6 || hex.length === 8)
+      return {
+        r: hp(hex.slice(0, 2)),
+        g: hp(hex.slice(2, 4)),
+        b: hp(hex.slice(4, 6)),
+        a: hex.length === 8 ? hp(hex.slice(6, 8)) : 1,
+      };
+    return { r: 0, g: 0, b: 0, a: 0 };
+  }
+  const m = s.match(/^rgba?\(([^)]+)\)$/);
+  if (m) {
+    const p = m[1].split(',').map((x) => x.trim());
+    if (p.length === 3 || p.length === 4) {
+      const r = clamp01(parseFloat(p[0]) / 255);
+      const g = clamp01(parseFloat(p[1]) / 255);
+      const b = clamp01(parseFloat(p[2]) / 255);
+      const a = p.length === 4 ? clamp01(parseFloat(p[3])) : 1;
+      if ([r, g, b, a].every(Number.isFinite)) return { r, g, b, a };
+    }
+  }
+  return { r: 0, g: 0, b: 0, a: 0 };
+};
+const sourceOver = (src, dst) => {
+  const outA = src.a + dst.a * (1 - src.a);
+  if (outA <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+  const bl = (sc, dc) => (sc * src.a + dc * dst.a * (1 - src.a)) / outA;
+  return { r: bl(src.r, dst.r), g: bl(src.g, dst.g), b: bl(src.b, dst.b), a: outA };
+};
+
+// --- build fixture tables ---
+const fixtures = {
+  _meta: {
+    description:
+      'Language-neutral canonical pipeline test vectors. Consumed by the TS jest suite (__tests__/pipeline.test.ts) and by the native M3/M4 suites. Generated by scripts/gen-fixtures.mjs — do not hand-edit.',
+    constants: { SLOPE, INTERCEPT, K, MIN_SIGMA_SNAPSHOT, SMALL_AREA, QMAX, LUMA },
+  },
+  sigmaPxFromDp: [
+    { blurRadiusDp: 0, displayScale: 3, expected: 0 },
+    { blurRadiusDp: 16, displayScale: 3, expected: 48 },
+    { blurRadiusDp: 16, displayScale: 2.625, expected: 42 },
+    { blurRadiusDp: 8, displayScale: 2, expected: 16 },
+    { blurRadiusDp: -5, displayScale: 3, expected: 0 },
+    { blurRadiusDp: 10, displayScale: 0, expected: 0 },
+  ],
+  sigmaSnapshotFromPx: [
+    { sigmaPx: 48, downsample: 4, expected: 12 },
+    { sigmaPx: 16, downsample: 1, expected: 16 },
+    { sigmaPx: 8, downsample: 8, expected: 1 },
+    { sigmaPx: 0, downsample: 2, expected: 0 },
+  ],
+  radiusForSigma: [
+    { sigmaSnapshot: 0, expected: { noBlur: true, radiusPlatform: 0 } },
+    { sigmaSnapshot: 0.5, expected: { noBlur: true, radiusPlatform: 0 } },
+    { sigmaSnapshot: 10, expected: radiusForSigma(10) },
+    { sigmaSnapshot: 1, expected: radiusForSigma(1) },
+    { sigmaSnapshot: 12, expected: radiusForSigma(12) },
+    { sigmaSnapshot: 1000, expected: radiusForSigma(1000) },
+  ],
+  autoDownsample: [
+    // (sigmaPx, captureAreaPx, quality) -> D
+    { sigmaPx: 0, captureAreaPx: 1000000, quality: 'balanced', expected: 1 },
+    { sigmaPx: 48, captureAreaPx: 2000000, quality: 'balanced', expected: 4 },
+    { sigmaPx: 48, captureAreaPx: 2000000, quality: 'high', expected: 2 },
+    { sigmaPx: 48, captureAreaPx: 2000000, quality: 'performance', expected: 8 },
+    { sigmaPx: 1.5, captureAreaPx: 2000000, quality: 'balanced', expected: 1 },
+    { sigmaPx: 3, captureAreaPx: 2000000, quality: 'balanced', expected: 2 },
+    { sigmaPx: 48, captureAreaPx: 10000, quality: 'performance', expected: 2 },
+    { sigmaPx: 0.4, captureAreaPx: 2000000, quality: 'balanced', expected: 1 },
+    { sigmaPx: 16, captureAreaPx: 65536, quality: 'balanced', expected: 4 },
+    { sigmaPx: 16, captureAreaPx: 65535, quality: 'balanced', expected: 2 },
+  ],
+  supportMarginPx: [
+    { sigmaPx: 0, expected: 0 },
+    { sigmaPx: 16, expected: 48 },
+    { sigmaPx: 12.5, expected: 38 },
+  ],
+  expandCaptureRect: [
+    {
+      visibleRect: { x: 100, y: 200, width: 300, height: 120 },
+      targetBounds: { x: 0, y: 0, width: 1080, height: 1920 },
+      sigmaPx: 16,
+      expected: expandCaptureRect(
+        { x: 100, y: 200, width: 300, height: 120 },
+        { x: 0, y: 0, width: 1080, height: 1920 },
+        16
+      ),
+    },
+    {
+      // clamps at top-left target edge
+      visibleRect: { x: 10, y: 5, width: 200, height: 80 },
+      targetBounds: { x: 0, y: 0, width: 1080, height: 1920 },
+      sigmaPx: 16,
+      expected: expandCaptureRect(
+        { x: 10, y: 5, width: 200, height: 80 },
+        { x: 0, y: 0, width: 1080, height: 1920 },
+        16
+      ),
+    },
+    {
+      // clamps at bottom-right target edge
+      visibleRect: { x: 900, y: 1800, width: 200, height: 200 },
+      targetBounds: { x: 0, y: 0, width: 1080, height: 1920 },
+      sigmaPx: 16,
+      expected: expandCaptureRect(
+        { x: 900, y: 1800, width: 200, height: 200 },
+        { x: 0, y: 0, width: 1080, height: 1920 },
+        16
+      ),
+    },
+    {
+      // no blur -> no expansion
+      visibleRect: { x: 100, y: 100, width: 50, height: 50 },
+      targetBounds: { x: 0, y: 0, width: 1080, height: 1920 },
+      sigmaPx: 0,
+      expected: expandCaptureRect(
+        { x: 100, y: 100, width: 50, height: 50 },
+        { x: 0, y: 0, width: 1080, height: 1920 },
+        0
+      ),
+    },
+  ],
+  snapshotRectFor: [
+    {
+      captureRectPx: { x: 52, y: 152, width: 396, height: 216 },
+      downsample: 4,
+      expected: snapshotRectFor({ x: 52, y: 152, width: 396, height: 216 }, 4),
+    },
+    {
+      // fractional origin: floor origin, ceil far edge
+      captureRectPx: { x: 3, y: 3, width: 4, height: 4 },
+      downsample: 4,
+      expected: snapshotRectFor({ x: 3, y: 3, width: 4, height: 4 }, 4),
+    },
+    {
+      captureRectPx: { x: 0, y: 0, width: 100, height: 100 },
+      downsample: 1,
+      expected: snapshotRectFor({ x: 0, y: 0, width: 100, height: 100 }, 1),
+    },
+  ],
+  cropRectFor: [
+    {
+      visibleRect: { x: 100, y: 200, width: 300, height: 120 },
+      captureRectPx: { x: 52, y: 152, width: 396, height: 216 },
+      downsample: 4,
+      expected: (() => {
+        const s = snapshotRectFor({ x: 52, y: 152, width: 396, height: 216 }, 4);
+        return cropRectFor({ x: 100, y: 200, width: 300, height: 120 }, s, 4);
+      })(),
+    },
+  ],
+  saturationMatrix: [
+    { s: 1, expected: saturationMatrix(1) },
+    { s: 0, expected: saturationMatrix(0) },
+    { s: 0.5, expected: saturationMatrix(0.5) },
+    { s: 2, expected: saturationMatrix(2) },
+  ],
+  parseColor: [
+    { input: 'transparent', expected: parseColor('transparent') },
+    { input: 'rgba(16,16,16,0.35)', expected: parseColor('rgba(16,16,16,0.35)') },
+    { input: 'rgba(16,16,16,0)', expected: parseColor('rgba(16,16,16,0)') },
+    { input: 'rgb(255,0,0)', expected: parseColor('rgb(255,0,0)') },
+    { input: '#000000', expected: parseColor('#000000') },
+    { input: '#ffffffff', expected: parseColor('#ffffffff') },
+    { input: '#0f8', expected: parseColor('#0f8') },
+    { input: 'nonsense', expected: parseColor('nonsense') },
+  ],
+  sourceOver: [
+    {
+      // overlay alpha 0 -> destination unchanged
+      src: { r: 16 / 255, g: 16 / 255, b: 16 / 255, a: 0 },
+      dst: { r: 0.8, g: 0.4, b: 0.2, a: 1 },
+      expected: sourceOver(
+        { r: 16 / 255, g: 16 / 255, b: 16 / 255, a: 0 },
+        { r: 0.8, g: 0.4, b: 0.2, a: 1 }
+      ),
+    },
+    {
+      // overlay alpha 0.35 over opaque
+      src: { r: 16 / 255, g: 16 / 255, b: 16 / 255, a: 0.35 },
+      dst: { r: 0.8, g: 0.4, b: 0.2, a: 1 },
+      expected: sourceOver(
+        { r: 16 / 255, g: 16 / 255, b: 16 / 255, a: 0.35 },
+        { r: 0.8, g: 0.4, b: 0.2, a: 1 }
+      ),
+    },
+    {
+      // overlay alpha 1 -> fully replaces
+      src: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+      dst: { r: 0.8, g: 0.4, b: 0.2, a: 1 },
+      expected: sourceOver(
+        { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+        { r: 0.8, g: 0.4, b: 0.2, a: 1 }
+      ),
+    },
+  ],
+};
+
+mkdirSync(dirname(OUT), { recursive: true });
+writeFileSync(OUT, JSON.stringify(fixtures, null, 2) + '\n');
+console.log('wrote', OUT);

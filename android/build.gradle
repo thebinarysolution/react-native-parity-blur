@@ -48,4 +48,10 @@ android {
 
 dependencies {
   implementation "com.facebook.react:react-android"
+
+  // Minimal JVM unit-test setup for the Milestone 3 pipeline-fixture parity suite
+  // (android/src/test/java/com/parityblur/PipelineFixturesTest.kt). Pure JUnit4 -- the
+  // AndroidBlurCalibration/PipelineMath classes under test have no android.* imports, so no
+  // Robolectric/instrumentation is needed.
+  testImplementation "junit:junit:4.13.2"
 }

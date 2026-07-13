@@ -6,7 +6,7 @@
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
     ".": {
-      "react-native-parity-blur-source": "./src/index.tsx",
+      "react-native-parity-blur-source": "./src/index.ts",
       "types": "./lib/typescript/src/index.d.ts",
       "default": "./lib/module/index.js"
     },
@@ -42,18 +42,23 @@
   "keywords": [
     "react-native",
     "ios",
-    "android"
+    "android",
+    "blur",
+    "backdrop-blur",
+    "glassmorphism",
+    "fabric",
+    "new-architecture"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lakhwindersingh/react-native-parity-blur.git"
+    "url": "git+https://github.com/thebinarysolution/react-native-parity-blur.git"
   },
-  "author": "Lakhwinder Singh <luckysingh781@gmail.com> (https://github.com/lakhwindersingh)",
+  "author": "Lakhwinder Singh <luckysingh781@gmail.com> (https://github.com/thebinarysolution)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/lakhwindersingh/react-native-parity-blur/issues"
+    "url": "https://github.com/thebinarysolution/react-native-parity-blur/issues"
   },
-  "homepage": "https://github.com/lakhwindersingh/react-native-parity-blur#readme",
+  "homepage": "https://github.com/thebinarysolution/react-native-parity-blur#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
@@ -136,7 +141,7 @@
       "customExportConditions": [
         "require",
         "react-native",
-        "<%- project.sourceCondition -%>"
+        "react-native-parity-blur-source"
       ]
     },
     "modulePathIgnorePatterns": [
