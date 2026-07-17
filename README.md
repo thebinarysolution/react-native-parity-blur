@@ -199,6 +199,8 @@ and docs/PIPELINE_SPEC.md for the locked pipeline both backends implement.
 
 ## Known limitations & performance
 
+- [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) — **blur not working? start here.** Turn on runtime
+  diagnostics with no rebuild, and map the log to the cause.
 - [docs/BOTTOM_SHEET_BACKDROP.md](docs/BOTTOM_SHEET_BACKDROP.md) — full-window blurred backdrop
   behind a sheet/modal: the layout, a `@gorhom/bottom-sheet` recipe, and the pitfalls.
 - [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — cross-window/Modal capture, surface-backed content

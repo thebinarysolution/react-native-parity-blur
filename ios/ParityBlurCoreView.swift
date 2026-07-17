@@ -178,6 +178,21 @@ public final class ParityBlurCoreView: UIView {
   /// Last window origin seen by the settle poll; nil = never sampled.
   private var lastWatchedOrigin: CGPoint?
 
+  private var warnedNoBlur = false
+
+  /// blurRadius resolving to "no blur" means we faithfully present the captured snapshot 1:1 --
+  /// which on screen is INDISTINGUISHABLE from the library doing nothing ("pure passthrough").
+  /// If the app asked for a real blur, the prop almost certainly never reached native.
+  private func warnNoBlurOnce() {
+    guard !warnedNoBlur else { return }
+    warnedNoBlur = true
+    ParityBlurDebug.warnOnce(
+      "blurRadius=\(blurRadius) resolves to NO BLUR, so the captured backdrop is presented "
+        + "unblurred (this looks exactly like pass-through). If you passed a non-zero blurRadius, "
+        + "the prop is not reaching native -- check that codegen ran for your React Native version."
+    )
+  }
+
   /// Would a capture right now be CLAMPED by the target bounds -- i.e. does any part of this view
   /// lie outside the window? `expandCaptureRect` intersects with the target, so such a capture only
   /// covers the overlapping band while the view still needs its full extent.
@@ -285,7 +300,19 @@ public final class ParityBlurCoreView: UIView {
     )
     let snapshotRect = PipelineMath.snapshotRectFor(captureRect, downsample: d)
     let crop = PipelineMath.cropRectFor(visible: visible, snapshotRect: snapshotRect, downsample: d)
-    guard snapshotRect.width >= 1, snapshotRect.height >= 1 else { return }
+    ParityBlurDebug.log(
+      "[\(ObjectIdentifier(self))] plan view=\(bounds.size) scale=\(scale) mode=\(mode) "
+        + "blurRadiusDp=\(blurRadius) sigmaPx=\(sigmaPx) d=\(d) "
+        + "visible=(\(visible.x),\(visible.y),\(visible.width),\(visible.height)) "
+        + "target=(\(targetBounds.width)x\(targetBounds.height)) "
+        + "capture=(\(captureRect.x),\(captureRect.y),\(captureRect.width),\(captureRect.height)) "
+        + "snapshot=(\(snapshotRect.width)x\(snapshotRect.height)) clamped=\(clamped)"
+    )
+    guard snapshotRect.width >= 1, snapshotRect.height >= 1 else {
+      ParityBlurDebug.log("[\(ObjectIdentifier(self))] abort: snapshot rect < 1px -- nothing to capture")
+      return
+    }
+    if blurRadius <= 0 { warnNoBlurOnce() }
 
     // Capture (model-state provider; registry exclusion — plan §16 rule 2: exclude ALL
     // registered surfaces, not just self).

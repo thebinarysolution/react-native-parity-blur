@@ -109,7 +109,21 @@ object SoftwareSnapshotProvider {
     val targetBounds = PipelineMath.Rect(0.0, 0.0, target.width.toDouble(), target.height.toDouble())
 
     val captureRectPx = PipelineMath.expandCaptureRect(visibleRect, targetBounds, sigmaPx)
-    if (captureRectPx.width <= 0 || captureRectPx.height <= 0) return null
+    ParityBlurDebug.log {
+      "[${System.identityHashCode(view)}] plan view=${view.width}x${view.height} " +
+        "viewLoc=(${viewLoc[0]},${viewLoc[1]}) target=${target.width}x${target.height} " +
+        "targetLoc=(${targetLoc[0]},${targetLoc[1]}) " +
+        "visible=(${visibleRect.x},${visibleRect.y},${visibleRect.width},${visibleRect.height}) " +
+        "capture=(${captureRectPx.x},${captureRectPx.y},${captureRectPx.width},${captureRectPx.height}) " +
+        "sigmaPx=$sigmaPx density=$density"
+    }
+    if (captureRectPx.width <= 0 || captureRectPx.height <= 0) {
+      ParityBlurDebug.log {
+        "[${System.identityHashCode(view)}] plan -> NULL: capture rect is empty, i.e. the view is " +
+          "entirely OUTSIDE the capture target. Nothing to capture."
+      }
+      return null
+    }
 
     val downsample = PipelineMath.resolveDownsample(
       downsampleProp,

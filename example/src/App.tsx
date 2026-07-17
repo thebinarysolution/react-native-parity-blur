@@ -14,6 +14,7 @@ import LiveHeaderScreen from './screens/LiveHeaderScreen';
 import LifecycleScreen from './screens/LifecycleScreen';
 import MultiBlurScreen from './screens/MultiBlurScreen';
 import OverlayBackdropScreen from './screens/OverlayBackdropScreen';
+import SheetBackdropReproScreen from './screens/SheetBackdropReproScreen';
 
 /**
  * Harness override: when non-null, the app renders ONE fixed screen with no chrome, so
@@ -21,7 +22,13 @@ import OverlayBackdropScreen from './screens/OverlayBackdropScreen';
  * POSTs /reload to Metro (updates all connected devices at once).
  */
 const FORCE_SCREEN:
-  'calibration' | 'live' | 'lifecycle' | 'multi' | 'overlay' | null = null;
+  | 'calibration'
+  | 'live'
+  | 'lifecycle'
+  | 'multi'
+  | 'overlay'
+  | 'sheetrepro'
+  | null = null;
 
 /**
  * Example app root.
@@ -48,6 +55,9 @@ export default function App() {
   }
   if (FORCE_SCREEN === 'overlay') {
     return <OverlayBackdropScreen />;
+  }
+  if (FORCE_SCREEN === 'sheetrepro') {
+    return <SheetBackdropReproScreen />;
   }
 
   return (

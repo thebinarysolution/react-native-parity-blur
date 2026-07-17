@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.3
+
+### Fixed
+
+- **React Native 0.81 builds now work without a patch.** The codegen spec declared the `refresh`
+  command's ref as `React.ComponentRef<...>`; RN 0.81's codegen matches this type by NAME and
+  accepts only `React.ElementRef<...>`, hard-failing the whole build with `The first argument of
+  method refresh must be of type React.ElementRef<>`. Verified by running each React Native's own
+  parser against the spec: `ElementRef` yields all 8 props plus the `refresh` command on **both**
+  0.81 and 0.85, so it is strictly the more compatible spelling. (React 19's types deprecate
+  `ElementRef` in favour of `ComponentRef` — do not "modernize" this back; codegen does not care
+  about the deprecation, only the name.)
+
+### Added
+
+- **Runtime diagnostics — no rebuild, works on release builds.** A `BlurView` showing no blur looks
+  identical on screen whether it never captured, captured something empty, or captured fine and
+  faithfully presented an *unblurred* snapshot because `blurRadius` resolved to 0. Only a log can
+  separate those. See the new [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
+
+  - Android: `adb shell setprop log.tag.ParityBlur DEBUG` then `adb logcat -d | grep ParityBlur`.
+  - iOS: launch argument `-ParityBlurDebug YES` (or env `PARITY_BLUR_DEBUG=1`).
+
+  Logs the props as received by native (which immediately proves or disproves a broken prop bridge),
+  device API level and real-blur support, the full capture plan geometry, the presented result, and
+  the *reason* any capture or draw was skipped.
+
+- **Two self-diagnosing warnings**, emitted even with diagnostics off, because both states are
+  otherwise invisible and look like "the library does nothing":
+  - a `BlurView` still measuring zero-area 1.5s after attach (almost always a collapsed *parent*,
+    not the BlurView's own style — reports the parent's measured size too);
+  - `blurRadius` resolving to no-blur while a real blur was requested, which is the exact signature
+    of props not reaching native.
+
+### Documentation
+
+- New [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md): how to enable diagnostics, what a healthy log looks
+  like, a table mapping each failure signature to its cause, and the four things to include in a bug
+  report.
+- Clarified that **`fallbackColor` not appearing is not evidence of a bug** — on API 31+ it is
+  deliberately never painted, so its absence tells you nothing. This has misled at least one report.
+
+### Internal
+
+- Added `example/src/screens/SheetBackdropReproScreen.tsx` (`FORCE_SCREEN='sheetrepro'`): a faithful
+  transcription of the reported sheet-backdrop layout — opacity-animated backdrop parent,
+  full-screen `BlurView` sibling below an upward-translating panel, `mode="live"` — with a flag to
+  toggle the opacity-animated parent for a controlled comparison. Verified blurring correctly on a
+  physical Pixel 6a (RN 0.85): an opacity-animated ancestor does **not** break the capture pipeline.
+
 ## 0.1.2
 
 ### Fixed

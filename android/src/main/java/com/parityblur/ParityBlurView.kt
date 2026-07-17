@@ -13,7 +13,6 @@ import android.graphics.RenderEffect
 import android.graphics.RenderNode
 import android.graphics.Shader
 import android.os.Build
-import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import com.facebook.react.views.view.ReactViewGroup
@@ -232,10 +231,69 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
   private fun isRealBlurSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
   private fun isEligibleForCapture(): Boolean {
-    if (!isAttachedToWindow) return false
-    if (width <= 0 || height <= 0) return false
-    val target = resolveTarget() ?: return false
-    return target.width > 0 && target.height > 0
+    if (!isAttachedToWindow) {
+      debugLog { "ineligible: not attached to window" }
+      return false
+    }
+    if (width <= 0 || height <= 0) {
+      debugLog { "ineligible: view measured ${width}x$height (zero-area views never capture)" }
+      return false
+    }
+    val target = resolveTarget()
+    if (target == null) {
+      debugLog { "ineligible: capture target unresolved (rootView=${rootView?.javaClass?.name})" }
+      return false
+    }
+    if (target.width <= 0 || target.height <= 0) {
+      debugLog { "ineligible: capture target measured ${target.width}x${target.height}" }
+      return false
+    }
+    return true
+  }
+
+  // ------------------------------------------------------------------ field self-diagnosis
+
+  private var warnedZeroSize = false
+  private var warnedNoBlur = false
+
+  /**
+   * A zero-area BlurView is the most common "the library does nothing" report: it captures nothing,
+   * draws nothing, and says nothing -- indistinguishable on screen from a broken library. Almost
+   * always the PARENT collapsed (a container whose children are ALL absolutely positioned has no
+   * in-flow content and resolves to height 0), not the BlurView's own style.
+   *
+   * Checked on a DELAY, never at attach time: every view is transiently 0x0 between attach and its
+   * first layout, so warning there fires on healthy views and trains people to ignore the warning.
+   * Only a view still zero-area long after attach is actually broken.
+   */
+  private val zeroSizeCheck = Runnable {
+    if (!isAttachedToWindow || warnedZeroSize) return@Runnable
+    if (width > 0 && height > 0) return@Runnable
+    warnedZeroSize = true
+    val p = parent as? View
+    ParityBlurDebug.warnOnce(
+      "BlurView still measures ${width}x$height ${ZERO_SIZE_GRACE_MS}ms after attach, so it cannot " +
+        "capture or draw anything and your content will look completely un-blurred. Its parent " +
+        "(${p?.javaClass?.simpleName}) measures ${p?.width}x${p?.height}. A container whose children " +
+        "are ALL absolutely positioned collapses to height 0 and takes the BlurView with it -- give " +
+        "the BlurView (and its parent) a real size. See docs/BOTTOM_SHEET_BACKDROP.md."
+    )
+  }
+
+  /**
+   * blurRadius resolving to "no blur" means we faithfully present the captured snapshot 1:1 -- which
+   * on screen is INDISTINGUISHABLE from the library doing nothing at all ("pure passthrough").
+   * If the app asked for a real blur, this almost always means the prop never reached native.
+   */
+  private fun warnNoBlurOnce() {
+    if (warnedNoBlur) return
+    warnedNoBlur = true
+    ParityBlurDebug.warnOnce(
+      "blurRadius=$blurRadius resolves to NO BLUR, so the captured backdrop is being presented " +
+        "unblurred (this looks exactly like pass-through). If you passed a non-zero blurRadius, the " +
+        "prop is not reaching native -- check that codegen ran for your React Native version and " +
+        "that no Fabric prop warning was logged for ParityBlurView."
+    )
   }
 
   // ------------------------------------------------------- window-geometry tracking (§18)
@@ -381,16 +439,41 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
    */
   internal fun isLiveEligible(nowNanos: Long): Boolean {
     if (mode != "live" || !isRealBlurSupported()) return false
-    if (!isAttachedToWindow || windowVisibility != View.VISIBLE) return false
-    if (!isShown || alpha <= 0.02f || width <= 0 || height <= 0) return false
+    if (!isAttachedToWindow || windowVisibility != View.VISIBLE) {
+      liveSkip("not attached / window not visible")
+      return false
+    }
+    if (!isShown) {
+      liveSkip("isShown=false (this view or an ancestor is GONE/INVISIBLE)")
+      return false
+    }
+    if (alpha <= 0.02f) {
+      liveSkip("alpha=$alpha (<=0.02: treated as invisible, capture skipped)")
+      return false
+    }
+    if (width <= 0 || height <= 0) {
+      liveSkip("measured ${width}x$height")
+      return false
+    }
     val minInterval = 1_000_000_000L / maxFps
-    if (nowNanos - lastLiveCaptureNanos < minInterval) return false
+    if (nowNanos - lastLiveCaptureNanos < minInterval) return false // throttle: not worth logging
     val loc = IntArray(2)
     getLocationInWindow(loc)
     val root = rootView
-    if (loc[0] + width <= 0 || loc[1] + height <= 0) return false
-    if (loc[0] >= root.width || loc[1] >= root.height) return false
+    if (loc[0] + width <= 0 || loc[1] + height <= 0 || loc[0] >= root.width || loc[1] >= root.height) {
+      liveSkip("entirely off-window at (${loc[0]},${loc[1]}) root=${root.width}x${root.height}")
+      return false
+    }
     return true
+  }
+
+  /** Live skips happen per frame; log only when the reason CHANGES, or logcat becomes unreadable. */
+  private var lastLiveSkipReason: String? = null
+
+  private fun liveSkip(reason: String) {
+    if (!ParityBlurDebug.enabled || reason == lastLiveSkipReason) return
+    lastLiveSkipReason = reason
+    debugLog { "live capture skipped: $reason" }
   }
 
   /**
@@ -448,6 +531,14 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
     capturedDownsample = result.downsample
     noBlurCurrent = result.noBlur
     radiusPlatformCurrent = result.radiusPlatform
+
+    debugLog {
+      "present bitmap=${result.bitmap.width}x${result.bitmap.height} d=${result.downsample} " +
+        "crop=(${result.cropRect.x},${result.cropRect.y},${result.cropRect.width},${result.cropRect.height}) " +
+        "noBlur=${result.noBlur} radiusPlatform=${result.radiusPlatform} blurRadiusDp=$blurRadius"
+    }
+    // The one state that looks identical to "the library is broken" -- surface it unprompted.
+    if (result.noBlur && blurRadius <= 0.0) warnNoBlurOnce()
 
     val node = presentNode ?: RenderNode("parityBlurPresent").also { presentNode = it }
     node.setPosition(0, 0, result.bitmap.width, result.bitmap.height)
@@ -519,7 +610,13 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
+    debugLog {
+      "attached sdk=${Build.VERSION.SDK_INT} realBlurSupported=${isRealBlurSupported()} " +
+        "props{blurRadius=$blurRadius mode=$mode saturation=$saturation quality=$quality " +
+        "downsample=$downsample maxFps=$maxFps overlayColor=$overlayColor fallbackColor=$fallbackColor}"
+    }
     captureState = CaptureState.ATTACHED_WAITING_LAYOUT
+    postDelayed(zeroSizeCheck, ZERO_SIZE_GRACE_MS)
     if (isRealBlurSupported()) {
       CapturePass.registered.add(this)
       val ctx = BlurEngine.get(context).windowContextFor(rootView)
@@ -532,6 +629,7 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
 
   override fun onDetachedFromWindow() {
     captureState = CaptureState.DETACHED
+    removeCallbacks(zeroSizeCheck)
     lastWatchedX = Int.MIN_VALUE
     lastWatchedY = Int.MIN_VALUE
     deferredAtX = Int.MIN_VALUE
@@ -578,7 +676,13 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
   override fun onDraw(canvas: Canvas) {
     super.onDraw(canvas)
     if (!isRealBlurSupported()) return // fallback path: background color only, already drawn.
-    if (!hasContent || !canvas.isHardwareAccelerated) return
+    if (!hasContent || !canvas.isHardwareAccelerated) {
+      drawSkip(
+        if (!hasContent) "no capture presented yet (hasContent=false)"
+        else "canvas is not hardware-accelerated"
+      )
+      return
+    }
     val node = presentNode ?: return
     val crop = cropRect ?: return
 
@@ -607,6 +711,15 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
     canvas.restoreToCount(saved)
   }
 
+  /** onDraw runs per frame; log only when the reason CHANGES. */
+  private var lastDrawSkipReason: String? = null
+
+  private fun drawSkip(reason: String) {
+    if (!ParityBlurDebug.enabled || reason == lastDrawSkipReason) return
+    lastDrawSkipReason = reason
+    debugLog { "draw skipped: $reason -- view is fully transparent, content behind shows through sharp" }
+  }
+
   private fun ensureClipPath(): Path? {
     val radii = cornerRadii
     if (radii == null || radii.all { it <= 0f }) return null
@@ -625,12 +738,17 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
     return path
   }
 
+  /** Routed to the runtime-toggleable field diagnostics -- see [ParityBlurDebug]. */
   private inline fun debugLog(msg: () -> String) {
-    if (DEBUG_LOGS) Log.d(TAG, msg())
+    ParityBlurDebug.log { "[${System.identityHashCode(this)}] ${msg()}" }
   }
 
-  companion object {
-    private const val TAG = "ParityBlurView"
-    private const val DEBUG_LOGS = false
+  private companion object {
+    /**
+     * How long after attach a still-zero-area view is considered genuinely broken rather than
+     * merely pre-layout. Generous on purpose: a false "you are broken" warning is worse than a late
+     * one, because it teaches people to ignore the channel we need them to trust.
+     */
+    const val ZERO_SIZE_GRACE_MS = 1500L
   }
 }

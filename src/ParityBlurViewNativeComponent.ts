@@ -70,7 +70,14 @@ export interface NativeProps extends ViewProps {
 type ComponentType = HostComponent<NativeProps>;
 
 interface NativeCommands {
-  refresh: (viewRef: React.ComponentRef<ComponentType>) => void;
+  // MUST stay `React.ElementRef`, NOT `React.ComponentRef`, even though React 19's types
+  // deprecate ElementRef in favour of ComponentRef. @react-native/codegen matches this type by
+  // NAME: RN 0.81's command parser accepts only `React.ElementRef<>` and hard-fails on
+  // ComponentRef with "The first argument of method refresh must be of type React.ElementRef<>",
+  // taking the whole build down. RN 0.85's parser accepts BOTH. Verified by running each RN's
+  // parser against this file: ElementRef yields all 8 props + the refresh command on 0.81 AND
+  // 0.85, so it is the strictly more compatible spelling. Do not "modernize" this.
+  refresh: (viewRef: React.ElementRef<ComponentType>) => void;
 }
 
 export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
