@@ -106,14 +106,25 @@ object PipelineMath {
    * Fractional snapshot-px crop rect selecting the visible region out of the (larger) snapshot
    * rect after blur. The fractional origin remainder in [0,1) snapshot px is resolved by the
    * bilinear upsample -- do not round it away (PIPELINE_SPEC §3.4).
+   *
+   * The result is intersected with the snapshot's own extent: [expandCaptureRect] CLAMPS the
+   * capture to the target bounds, but this crop is derived from the UNCLAMPED visible rect, so a
+   * view lying partly outside the target (e.g. a fullscreen backdrop inside a sheet host that is
+   * mid-`translateY`) would otherwise select pixels the snapshot never captured -- presenting the
+   * captured band at a DISPLACED offset. Whenever the visible rect is contained in the target
+   * bounds -- every case the fixtures and the calibration harness exercise -- expandCaptureRect
+   * only ever grows beyond it before clamping, so the snapshot already covers visibleRect/D and
+   * this intersection is the IDENTITY. It bites only in the partial-off-target case, where it
+   * places the band correctly instead of displacing it.
    */
   fun cropRectFor(visibleRect: Rect, snapshotRect: Rect, downsample: Int): Rect {
-    return Rect(
+    val raw = Rect(
       x = visibleRect.x / downsample - snapshotRect.x,
       y = visibleRect.y / downsample - snapshotRect.y,
       width = visibleRect.width / downsample,
       height = visibleRect.height / downsample
     )
+    return intersectRect(raw, Rect(0.0, 0.0, snapshotRect.width, snapshotRect.height))
   }
 
   // ------------------------------------------------------------ downsample.ts

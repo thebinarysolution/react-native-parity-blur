@@ -37,12 +37,28 @@ Android's first capture after mount uses `PixelCopy` against the compositor-rend
 content, which correctly includes GPU-composited (`Bitmap.Config.HARDWARE`) content — notably,
 `Image` components that Fresco has decoded to a hardware bitmap on modern devices. Every
 **recapture** after that (static `refresh()`, or a static prop change that triggers a new capture)
-instead uses a software-`Canvas` draw pass for correctness/lifecycle reasons (plan §14.1/§14.2),
-and a software canvas **cannot rasterize `HARDWARE` bitmaps** — Android silently skips drawing
-them. Practically: an `Image`-heavy backdrop can look correct on first mount and then lose those
-images from the blur on a subsequent `refresh()`. This is a known v1 gap (see
-`android/src/main/java/com/parityblur/SoftwareSnapshotProvider.kt` and
-`PixelCopySnapshotProvider.kt`), not something you can work around from JS today.
+instead uses a software-`Canvas` draw pass for correctness/lifecycle reasons (plan §14.1/§14.2).
+The pinning is deliberate, not an oversight: `PixelCopy` reads the composited frame *including this
+view's own presented blur*, so using it for a recapture would feed the blur back into itself, and
+the `CapturePass` draw-exclusion that prevents this only works on the software path.
+
+A software canvas **cannot rasterize `HARDWARE` bitmaps**, so an `Image`-heavy backdrop may lose
+those images from the blur on a subsequent `refresh()`. Two honest caveats on how much this matters
+in practice, because it is easy to over-attribute bugs to this gap:
+
+- **Scope.** React Native/Fresco decode to `ARGB_8888` by default; `Config.HARDWARE` requires an
+  explicit opt-in. Unless you have opted in, there is likely nothing here for the software canvas
+  to drop.
+- **Unverified mechanism.** The exact failure mode is *not* established. Android's
+  `BaseCanvas.throwIfHwBitmapInSwMode` **throws** `IllegalArgumentException` rather than skipping,
+  and there is no `try`/`catch` on the capture path — which implies a crash, not a silent hole. The
+  one recorded on-device observation was "black blur strips". Treat "silently skips" as a
+  hypothesis, not a documented behaviour, and do not diagnose a blur bug as this gap without
+  reproducing it.
+
+A useful discriminator: this gap can only ever affect regions where `Image`s are. If **text** in
+your backdrop is also wrong — sharp where it should be blurred — the cause is something else, since
+a software canvas rasterizes text perfectly well.
 
 ## iOS live mode is the most expensive path
 

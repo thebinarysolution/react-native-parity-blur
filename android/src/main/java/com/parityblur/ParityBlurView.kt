@@ -91,6 +91,19 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
     if (!isRealBlurSupported()) return
     val ctx = windowContext ?: return
     if (mode == "live" && isAttachedToWindow) ctx.registerLive(this) else ctx.unregisterLive(this)
+    syncGeometryWatch()
+  }
+
+  /**
+   * Static views join the per-window geometry watch (plan §18) -- see [checkWindowGeometry] for why
+   * no other trigger can see an ancestor transform. Live views are excluded: they already recapture
+   * every frame, so watching their geometry would be redundant work.
+   */
+  private fun syncGeometryWatch() {
+    if (!isRealBlurSupported()) return
+    val ctx = windowContext ?: return
+    if (mode == "static" && isAttachedToWindow) ctx.registerGeometryWatch(this)
+    else ctx.unregisterGeometryWatch(this)
   }
 
   fun setOverlayColor(value: Int?) {
@@ -225,6 +238,56 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
     return target.width > 0 && target.height > 0
   }
 
+  // ------------------------------------------------------- window-geometry tracking (§18)
+
+  /** Last window position seen by the per-window geometry watcher; MIN_VALUE = never sampled. */
+  private var lastWatchedX = Int.MIN_VALUE
+  private var lastWatchedY = Int.MIN_VALUE
+
+  /** Window position at the last DEFERRED capture attempt (the settle gate's previous sample). */
+  private var deferredAtX = Int.MIN_VALUE
+  private var deferredAtY = Int.MIN_VALUE
+
+  private val locScratch = IntArray(2)
+
+  /**
+   * Would a capture taken right now be CLAMPED by the target's bounds -- i.e. does any part of this
+   * view lie outside the capture target? [PipelineMath.expandCaptureRect] intersects with the
+   * target bounds, so such a capture yields a snapshot covering only the overlapping band while the
+   * view still needs its full extent. Static mode would then freeze that band forever.
+   */
+  private fun captureWouldClamp(target: ViewGroup): Boolean {
+    val targetLoc = IntArray(2)
+    getLocationInWindow(locScratch)
+    target.getLocationInWindow(targetLoc)
+    val x = locScratch[0] - targetLoc[0]
+    val y = locScratch[1] - targetLoc[1]
+    return x < 0 || y < 0 || x + width > target.width || y + height > target.height
+  }
+
+  /**
+   * Per-frame geometry check, driven by [WindowBlurContext]'s shared pre-draw listener (plan §18).
+   *
+   * This is the ONLY reliable observer of an ancestor TRANSFORM. `onSizeChanged` fires on size
+   * changes and `onLayout` on left/top changes, but a `translateY` -- what every bottom-sheet and
+   * modal transition animates -- is a draw-time matrix that changes NEITHER, while
+   * `getLocationInWindow()` (which the capture plan is built from) DOES reflect it. Without this,
+   * a fullscreen backdrop inside a sheet host that is mid-transform at capture time captures a
+   * clamped band and nothing ever re-captures it: the band is permanent.
+   *
+   * Cost is one `getLocationInWindow` plus two int compares per watched view per frame (~1-2us),
+   * and the listener is installed only while a static view is actually attached.
+   */
+  internal fun checkWindowGeometry() {
+    if (!isRealBlurSupported() || mode != "static") return
+    if (!isAttachedToWindow || width <= 0 || height <= 0) return
+    getLocationInWindow(locScratch)
+    if (locScratch[0] == lastWatchedX && locScratch[1] == lastWatchedY) return
+    lastWatchedX = locScratch[0]
+    lastWatchedY = locScratch[1]
+    requestCapture()
+  }
+
   /**
    * Request a capture: bumps the generation and asks the window context to coalesce a capture
    * at the next valid frame boundary (plan §14.4/§20/§23). No-ops entirely on API<31 (guardrail:
@@ -253,6 +316,33 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
       return
     }
     val target = resolveTarget() ?: return
+
+    // Settle gate (plan §18): never BAKE a capture that the target bounds would clamp while the
+    // view is still moving. A sheet/modal host animating translateY drags this view partly outside
+    // the window; capturing there yields a band, and in static mode that band is what gets frozen.
+    // Deferring costs one frame per moving frame and, crucially, leaves `hasContent` false -- so
+    // the capture that finally lands is still the FIRST one, i.e. PixelCopy at settled geometry.
+    // That fixes the band without re-entering PixelCopy after a present (which would read this
+    // view's own output back in -- see PixelCopySnapshotProvider's feedback constraint).
+    //
+    // Gated on `clamped &&` deliberately: a view fully inside the target captures immediately, so
+    // the common case (and the README Quick Start panel) is not delayed by even one frame. A view
+    // that is legitimately half-offscreen and STATIONARY also captures immediately on the second
+    // attempt, since its position then matches the previous sample -- no frame-count heuristic, no
+    // magic number, and no way to stall forever.
+    if (captureWouldClamp(target)) {
+      val movedSinceLastAttempt = locScratch[0] != deferredAtX || locScratch[1] != deferredAtY
+      if (movedSinceLastAttempt) {
+        deferredAtX = locScratch[0]
+        deferredAtY = locScratch[1]
+        captureState = CaptureState.WAITING_STABLE_FRAME
+        windowContext?.scheduleCapture(this)
+        return
+      }
+    }
+    deferredAtX = Int.MIN_VALUE
+    deferredAtY = Int.MIN_VALUE
+
     captureState = CaptureState.CAPTURE_PENDING
     val myGeneration = generation
     val engine = BlurEngine.get(context)
@@ -442,6 +532,10 @@ class ParityBlurView(context: Context) : ReactViewGroup(context) {
 
   override fun onDetachedFromWindow() {
     captureState = CaptureState.DETACHED
+    lastWatchedX = Int.MIN_VALUE
+    lastWatchedY = Int.MIN_VALUE
+    deferredAtX = Int.MIN_VALUE
+    deferredAtY = Int.MIN_VALUE
     windowContext?.let {
       it.unregister(this)
       it.cancelScheduledCapture(this)

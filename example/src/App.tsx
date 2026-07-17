@@ -13,14 +13,15 @@ import CalibrationScreen from './screens/CalibrationScreen';
 import LiveHeaderScreen from './screens/LiveHeaderScreen';
 import LifecycleScreen from './screens/LifecycleScreen';
 import MultiBlurScreen from './screens/MultiBlurScreen';
+import OverlayBackdropScreen from './screens/OverlayBackdropScreen';
 
 /**
  * Harness override: when non-null, the app renders ONE fixed screen with no chrome, so
  * cross-platform screenshots are pixel-comparable. The device harness edits this constant and
  * POSTs /reload to Metro (updates all connected devices at once).
  */
-const FORCE_SCREEN: 'calibration' | 'live' | 'lifecycle' | 'multi' | null =
-  null;
+const FORCE_SCREEN:
+  'calibration' | 'live' | 'lifecycle' | 'multi' | 'overlay' | null = null;
 
 /**
  * Example app root.
@@ -44,6 +45,9 @@ export default function App() {
   }
   if (FORCE_SCREEN === 'multi') {
     return <MultiBlurScreen />;
+  }
+  if (FORCE_SCREEN === 'overlay') {
+    return <OverlayBackdropScreen />;
   }
 
   return (

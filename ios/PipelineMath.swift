@@ -128,14 +128,23 @@ public enum PipelineMath {
   }
 
   /// Fractional crop rect in SNAPSHOT PX selecting the visible region (spec §3.4).
+  ///
+  /// Intersected with the snapshot's own extent: `expandCaptureRect` CLAMPS the capture to the
+  /// target bounds, but this crop is derived from the UNCLAMPED visible rect, so a view lying
+  /// partly outside the target (e.g. a fullscreen backdrop inside a sheet host mid-transform)
+  /// would otherwise select pixels the snapshot never captured, presenting the captured band at a
+  /// DISPLACED offset. Whenever the visible rect is contained in the target bounds -- every case
+  /// the fixtures and the calibration harness exercise -- the snapshot already covers visible/D
+  /// and this intersection is the IDENTITY.
   public static func cropRectFor(visible: Rect, snapshotRect: Rect, downsample: Int) -> Rect {
     let d = Double(downsample)
-    return Rect(
+    let raw = Rect(
       x: visible.x / d - snapshotRect.x,
       y: visible.y / d - snapshotRect.y,
       width: visible.width / d,
       height: visible.height / d
     )
+    return intersect(raw, Rect(x: 0, y: 0, width: snapshotRect.width, height: snapshotRect.height))
   }
 
   // MARK: - Saturation matrix (spec §7): row-major 4x5, Android ColorMatrix layout

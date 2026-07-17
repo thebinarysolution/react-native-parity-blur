@@ -72,6 +72,29 @@ By default (`mode="static"`), the backdrop is captured once — on mount and on 
 changes — and presented as a still blurred snapshot. If content behind the view changes afterward
 without a layout change, call `refresh()` (see below) or switch to `mode="live"`.
 
+### Full-window backdrop behind a sheet or modal
+
+The Quick Start above is the case where the `BlurView` **is** the panel. The other common shape is a
+full-window blurred **backdrop** *behind* an opaque sheet — the `BlurView` is a transparent overlay
+and your sheet sits on top of it as a sibling:
+
+```jsx
+<View style={{ flex: 1 }}>
+  <Dashboard />
+
+  {/* backdrop: transparent, full-window, BEHIND the sheet */}
+  <BlurView style={StyleSheet.absoluteFillObject} blurRadius={20} mode="static" />
+
+  {/* sheet: opaque, sharp, drawn on top */}
+  <MySheet />
+</View>
+```
+
+The three things that most often go wrong here — a backdrop whose parent collapsed to height 0, a
+sheet accidentally blurred into its own backdrop, and React Native's core `<Modal>` being a separate
+native window — plus a ready-made `@gorhom/bottom-sheet` recipe, are covered in
+**[docs/BOTTOM_SHEET_BACKDROP.md](docs/BOTTOM_SHEET_BACKDROP.md)**.
+
 ## The canonical unit: `blurRadius`
 
 `blurRadius` is a **Gaussian sigma expressed in dp** (density-independent pixels — iOS `pt` and
@@ -146,7 +169,9 @@ on iOS and Android.
 - **`mode="static"`** (default): capture happens once, then the blurred result is a cheap static
   presentation with no ongoing per-frame cost — measured at **0 rendered frames over 6s of idle
   time** on Android (docs/HARDENING_REPORT.md). Use this for bottom sheets, modals, and any
-  backdrop that only changes on discrete events (call `refresh()` after those events).
+  backdrop that only changes on discrete events (call `refresh()` after those events) — see
+  [docs/BOTTOM_SHEET_BACKDROP.md](docs/BOTTOM_SHEET_BACKDROP.md) for the full-window backdrop
+  layout specifically.
 - **`mode="live"`** continuously recaptures the backdrop, throttled to `maxFps` (default 30) and
   paused automatically when the view isn't visible. Use this for blur over actively scrolling or
   animating content (e.g. a blurred header above a scrolling list). It costs strictly more than
@@ -174,6 +199,8 @@ and docs/PIPELINE_SPEC.md for the locked pipeline both backends implement.
 
 ## Known limitations & performance
 
+- [docs/BOTTOM_SHEET_BACKDROP.md](docs/BOTTOM_SHEET_BACKDROP.md) — full-window blurred backdrop
+  behind a sheet/modal: the layout, a `@gorhom/bottom-sheet` recipe, and the pitfalls.
 - [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — cross-window/Modal capture, surface-backed content
   (video/camera/maps), static-mode staleness, iOS live cost, nested-blur semantics, `blurTarget`
   status, and more.

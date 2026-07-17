@@ -100,18 +100,34 @@ export function snapshotRectFor(
  *
  *   cropX = visibleRect.x / D  -  snapshotRect.x
  *   cropW = visibleRect.width / D
+ *
+ * The result is intersected with the snapshot's own extent. {@link expandCaptureRect}
+ * CLAMPS the capture to the target bounds, but this crop is derived from the
+ * UNCLAMPED visible rect, so a view lying partly outside the target (e.g. a
+ * fullscreen backdrop inside a sheet host that is mid-`translateY`) would
+ * otherwise select pixels the snapshot never captured, presenting the captured
+ * band at a DISPLACED offset. Whenever the visible rect is contained in the
+ * target bounds — every case the fixtures and the calibration harness exercise —
+ * expandCaptureRect only ever grows beyond it before clamping, so the snapshot
+ * already covers visibleRect/D and this intersection is the IDENTITY.
  */
 export function cropRectFor(
   visibleRect: Rect,
   snapshotRect: Rect,
   downsample: Downsample
 ): Rect {
-  return {
+  const raw = {
     x: visibleRect.x / downsample - snapshotRect.x,
     y: visibleRect.y / downsample - snapshotRect.y,
     width: visibleRect.width / downsample,
     height: visibleRect.height / downsample,
   };
+  return intersectRect(raw, {
+    x: 0,
+    y: 0,
+    width: snapshotRect.width,
+    height: snapshotRect.height,
+  });
 }
 
 /**

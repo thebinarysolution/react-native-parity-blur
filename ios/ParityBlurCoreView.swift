@@ -171,6 +171,47 @@ public final class ParityBlurCoreView: UIView {
     window != nil && bounds.width > 0.5 && bounds.height > 0.5 && !isFallbackActive
   }
 
+  /// Origin at the last DEFERRED capture attempt (the settle gate's previous sample); nil when the
+  /// view is not currently being polled for settling.
+  private var lastSettleOrigin: CGPoint?
+
+  /// Last window origin seen by the settle poll; nil = never sampled.
+  private var lastWatchedOrigin: CGPoint?
+
+  /// Would a capture right now be CLAMPED by the target bounds -- i.e. does any part of this view
+  /// lie outside the window? `expandCaptureRect` intersects with the target, so such a capture only
+  /// covers the overlapping band while the view still needs its full extent.
+  private func captureWouldClamp(in window: UIWindow) -> Bool {
+    let scale = Double(window.screen.scale)
+    let f = convert(bounds, to: window)
+    return f.minX < 0 || f.minY < 0
+      || Double(f.maxX) * scale > Double(window.bounds.width) * scale
+      || Double(f.maxY) * scale > Double(window.bounds.height) * scale
+  }
+
+  /**
+   Per-frame geometry check driven by `WindowBlurContext`'s settle poll (plan §18). Returns whether
+   polling should CONTINUE.
+
+   `layoutSubviews` fires only on a `bounds.size` change, so an ancestor TRANSFORM -- what every
+   sheet/modal transition animates -- is invisible to every other trigger, while
+   `convert(bounds, to: window)` (which the capture plan is built from) does reflect it. Without
+   this, a backdrop that captured a clamped band mid-animation keeps it forever.
+
+   Polling continues only while the view is still CLAMPED, i.e. while its presented result is known
+   to be degraded. The moment it settles fully inside the window and re-captures cleanly, the poll
+   stops and the link tears down -- so a settled window keeps zero display links.
+   */
+  func checkWindowGeometry() -> Bool {
+    guard mode as String == "static", isEligible, let window else { return false }
+    let origin = convert(bounds, to: window).origin
+    if origin != lastWatchedOrigin {
+      lastWatchedOrigin = origin
+      requestCapture()
+    }
+    return captureWouldClamp(in: window)
+  }
+
   private func requestCapture() {
     guard isEligible else { return }
     generation &+= 1
@@ -204,6 +245,35 @@ public final class ParityBlurCoreView: UIView {
       x: 0, y: 0,
       width: target.bounds.width * scale, height: target.bounds.height * scale
     )
+    // Settle gate (plan §18): never BAKE a capture that the target bounds would clamp while the
+    // view is still moving. A sheet/modal host animating a transform drags this view partly outside
+    // the window; expandCaptureRect then clamps the capture to a band, and in static mode that band
+    // is what gets frozen -- permanently, because layoutSubviews only fires on a bounds.SIZE change
+    // and a transform changes neither size nor bounds. Poll instead until the motion stops.
+    //
+    // Gated on `clamped &&` deliberately: a view fully inside the target captures immediately, so
+    // the common case is never delayed. A view that is legitimately half-offscreen and STATIONARY
+    // also captures on its next attempt, because its origin then matches the previous sample --
+    // no frame budget, no magic number, and no way to stall forever.
+    let clamped = visible.x < 0 || visible.y < 0
+      || visible.x + visible.width > targetBounds.width
+      || visible.y + visible.height > targetBounds.height
+    if clamped {
+      // Keep polling regardless: a clamped view is in a known-degraded state, and the poll is the
+      // ONLY thing that will notice it later settling into full view (see checkWindowGeometry).
+      windowContext?.scheduleSettlePoll(self)
+      let origin = CGPoint(x: framePt.minX, y: framePt.minY)
+      if origin != lastSettleOrigin {
+        // Still moving -- do not bake a band that this frame's transform happens to produce.
+        lastSettleOrigin = origin
+        return
+      }
+      // Stationary but clamped: capture the best band available now (better than nothing), and the
+      // poll above stays armed so a later settle still upgrades it to a full, correct capture.
+    } else {
+      lastSettleOrigin = nil
+    }
+
     let captureRect = PipelineMath.expandCaptureRect(
       visible: visible, targetBounds: targetBounds, sigmaPx: sigmaPx
     )

@@ -52,6 +52,15 @@ class WindowBlurContext(private val rootView: View) {
 
   private val liveViews: MutableSet<ParityBlurView> =
     Collections.newSetFromMap(WeakHashMap())
+
+  /**
+   * Static views whose window position is watched each frame (plan §18). Separate from
+   * [liveViews]: these do NOT recapture per frame, they only re-request a capture when their
+   * position in the window actually changes.
+   */
+  private val geometryWatched: MutableSet<ParityBlurView> =
+    Collections.newSetFromMap(WeakHashMap())
+
   private var preDrawInstalled = false
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
@@ -61,7 +70,49 @@ class WindowBlurContext(private val rootView: View) {
         view.performLiveCapture(now)
       }
     }
+    // Geometry watch (plan §18): the only trigger that sees an ancestor TRANSFORM -- onSizeChanged
+    // and onLayout both miss it, so without this a static backdrop inside a transform-animated
+    // sheet host freezes whatever partial band it captured mid-animation. Each view costs one
+    // getLocationInWindow + two int compares; a changed position only REQUESTS a capture, which the
+    // Choreographer path then coalesces as usual.
+    for (view in geometryWatched) {
+      view.checkWindowGeometry()
+    }
     true
+  }
+
+  /**
+   * Install/uninstall the shared pre-draw listener to match demand (plan §24): it runs only while
+   * this window actually has live views or watched static views. NOTE: plan §24's "zero scheduler
+   * work when no live blur is active" now reads "no live blur AND no attached static blur" -- a
+   * static view must be watched to notice an ancestor transform. The per-frame cost of a watched
+   * static view is a position compare, not a capture.
+   */
+  private fun syncPreDrawListener() {
+    val wanted = liveViews.isNotEmpty() || geometryWatched.isNotEmpty()
+    if (wanted && !preDrawInstalled) {
+      val vto = rootView.viewTreeObserver
+      if (vto.isAlive) {
+        vto.addOnPreDrawListener(preDrawListener)
+        preDrawInstalled = true
+        ParityBlurDebug.log { "scheduler-install window=${System.identityHashCode(rootView)}" }
+      }
+    } else if (!wanted && preDrawInstalled) {
+      val vto = rootView.viewTreeObserver
+      if (vto.isAlive) vto.removeOnPreDrawListener(preDrawListener)
+      preDrawInstalled = false
+      ParityBlurDebug.log { "scheduler-uninstall window=${System.identityHashCode(rootView)}" }
+    }
+  }
+
+  fun registerGeometryWatch(view: ParityBlurView) {
+    geometryWatched.add(view)
+    syncPreDrawListener()
+  }
+
+  fun unregisterGeometryWatch(view: ParityBlurView) {
+    geometryWatched.remove(view)
+    syncPreDrawListener()
   }
 
   fun register(view: ParityBlurView) {
@@ -72,28 +123,17 @@ class WindowBlurContext(private val rootView: View) {
     activeViews.remove(view)
     pendingCaptures.remove(view)
     unregisterLive(view)
+    unregisterGeometryWatch(view)
   }
 
   fun registerLive(view: ParityBlurView) {
     liveViews.add(view)
-    if (!preDrawInstalled) {
-      val vto = rootView.viewTreeObserver
-      if (vto.isAlive) {
-        vto.addOnPreDrawListener(preDrawListener)
-        preDrawInstalled = true
-        ParityBlurDebug.log { "scheduler-install window=${System.identityHashCode(rootView)}" }
-      }
-    }
+    syncPreDrawListener()
   }
 
   fun unregisterLive(view: ParityBlurView) {
     liveViews.remove(view)
-    if (liveViews.isEmpty() && preDrawInstalled) {
-      val vto = rootView.viewTreeObserver
-      if (vto.isAlive) vto.removeOnPreDrawListener(preDrawListener)
-      preDrawInstalled = false
-      ParityBlurDebug.log { "scheduler-uninstall window=${System.identityHashCode(rootView)}" }
-    }
+    syncPreDrawListener()
   }
 
   /**
