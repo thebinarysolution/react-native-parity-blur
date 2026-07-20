@@ -4,7 +4,7 @@ A `BlurView` that shows no blur looks **identical on screen** in at least four c
 failure modes. A screenshot cannot tell them apart — and neither can we. This page turns "it doesn't
 work" into a one-line answer.
 
-**If you are reporting a bug: run the capture in §1 and paste the output.** That is the single most
+**If you are reporting a bug: paste a screenshot AND the log from §1.** Together they are the most
 useful thing you can send, and it usually makes the round-trip unnecessary.
 
 ## 1. Turn on diagnostics (no rebuild, works on release builds)
@@ -108,6 +108,22 @@ else — by design, see [LIMITATIONS.md](LIMITATIONS.md#android-below-api-31-no-
 > **`fallbackColor` not showing is NOT evidence of a bug.** On API 31+ it is deliberately never
 > painted — the background is set to transparent. Its absence tells you nothing.
 
+### E0. iOS: it blurs in the Simulator but NOT on a real device
+
+Two distinct causes, in order of likelihood:
+
+1. **Reduce Transparency is ON.** Settings ▸ Accessibility ▸ Display & Text Size ▸ Reduce
+   Transparency. When enabled, `BlurView` deliberately skips all blur machinery and renders its flat
+   `fallbackColor` instead — so you see a solid, un-blurred colour. It defaults **OFF in the
+   Simulator** and is commonly **ON for real users**, which is exactly why the two disagree. The
+   library logs a warning for this (unconditionally, once per view). Pick a `fallbackColor` that is
+   acceptable as a solid fill, because real users will see it.
+2. **A solid magenta / vivid garbage fill** — fixed in 0.1.4. Undefined GPU memory was being sampled;
+   the Simulator zeroes it, real hardware does not. Upgrade.
+
+Corollary worth internalising: **the Simulator cannot catch undefined-memory bugs.** Always confirm a
+visual issue on a physical device before concluding the library is fine.
+
 ### E. No `ParityBlur` lines whatsoever → the native view was never created
 
 Diagnostics are unconditional once the view attaches, so total silence means no `ParityBlurView` was
@@ -123,14 +139,17 @@ this log**.
 
 ## 4. If you still need to file a report
 
-Paste **all four** of these. Anything less and the first reply will just ask for them:
+Paste **all five** of these. Anything less and the first reply will just ask for them:
 
-1. The `ParityBlur` log from §1 (the whole thing — the `props{...}` and `plan`/`present` lines are
+1. **A screenshot of the actual result, plus one of what you expected.** This is not optional and it
+   is often the single most decisive item: "no blur", "weak blur", and "a solid colour" are three
+   different bugs that read identically in prose, and guessing between them costs a round-trip.
+2. The `ParityBlur` log from §1 (the whole thing — the `props{...}` and `plan`/`present` lines are
    the ones that matter).
-2. Your **exact** JSX for the BlurView **and its parent chain up to the screen root**, including
+3. Your **exact** JSX for the BlurView **and its parent chain up to the screen root**, including
    every `style`. The parent matters at least as much as the BlurView.
-3. `react-native` version, `react-native-parity-blur` version, New Arch on/off, device OS/API level.
-4. Whether you patched this library (`patch-package` etc.) — and if so, the patch.
+4. `react-native` version, `react-native-parity-blur` version, New Arch on/off, device OS/API level.
+5. Whether you patched this library (`patch-package` etc.) — and if so, the patch.
 
 Useful extra: does it also fail with `mode="static"` and a plain, non-animated parent? That one
 answer splits "our capture pipeline" from "your layout" immediately.

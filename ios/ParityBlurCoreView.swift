@@ -161,10 +161,31 @@ public final class ParityBlurCoreView: UIView {
     if isFallbackActive {
       presentation.isHidden = true
       backgroundColor = fallbackColor ?? .clear
+      warnReduceTransparencyOnce()
     } else {
       presentation.isHidden = false
       backgroundColor = .clear
     }
+  }
+
+  private var warnedReduceTransparency = false
+
+  /// The single most confusing "it works in the simulator but not on my phone" report there is:
+  /// Reduce Transparency is OFF by default in the simulator and commonly ON for real users, so the
+  /// device silently renders a FLAT `fallbackColor` fill where the simulator renders a real blur.
+  /// Nobody guesses this from the screen -- a solid rectangle just looks like a broken library --
+  /// so it is announced unconditionally, exactly once per view.
+  private func warnReduceTransparencyOnce() {
+    guard !warnedReduceTransparency else { return }
+    warnedReduceTransparency = true
+    ParityBlurDebug.warnOnce(
+      "iOS \"Reduce Transparency\" is ENABLED on this device, so this BlurView is intentionally "
+        + "rendering its flat fallbackColor (\(fallbackColor.map { "\($0)" } ?? "transparent")) "
+        + "instead of a real blur. This is the documented accessibility behaviour, not a bug -- but "
+        + "it is why the simulator (where the setting defaults to OFF) blurs and this device does "
+        + "not. Turn it off in Settings > Accessibility > Display & Text Size > Reduce Transparency, "
+        + "or pick a fallbackColor that looks acceptable as a solid fill."
+    )
   }
 
   private var isEligible: Bool {
@@ -370,9 +391,17 @@ public final class ParityBlurCoreView: UIView {
   /// Saturation/overlay/radius-mask changes re-present from the cached blurred texture without
   /// recapturing (plan §20). No-op until the first capture exists.
   private func representOnly() {
-    guard lastCrop != nil, dstTexture != nil, let engine = BlurEngine.shared() else { return }
+    guard lastCrop != nil, dstHasBlurredContent, let engine = BlurEngine.shared() else { return }
     encodeAndPresent(engine: engine, uploadSnapshot: false)
   }
+
+  /// Whether [dstTexture] actually holds an ENCODED blur result.
+  ///
+  /// `dstTexture != nil` is NOT the same thing: Metal does not zero a freshly created texture, and
+  /// the allocation happens before anything is encoded into it. A re-present that samples an
+  /// allocated-but-never-written texture reads undefined GPU memory — harmlessly zeroed on the
+  /// Simulator, but vivid garbage (commonly solid magenta) on real Apple GPUs. Device-only bug.
+  private var dstHasBlurredContent = false
 
   private func encodeAndPresent(engine: BlurEngine, uploadSnapshot: Bool) {
     guard let crop = lastCrop else { return }
@@ -390,6 +419,10 @@ public final class ParityBlurCoreView: UIView {
         desc.usage = [.shaderRead, .shaderWrite]
         srcTexture = engine.device.makeTexture(descriptor: desc)
         dstTexture = engine.device.makeTexture(descriptor: desc)
+        // Freshly allocated Metal textures hold UNDEFINED memory, so the old blur result is gone
+        // and nothing valid has replaced it yet. Anything that samples dst before this pass
+        // finishes encoding would read garbage.
+        dstHasBlurredContent = false
       }
       guard let src = srcTexture else { return }
       src.replace(
@@ -398,6 +431,11 @@ public final class ParityBlurCoreView: UIView {
       )
     }
     guard let src = srcTexture, let dst = dstTexture else { return }
+    // Never sample dst unless a blur has actually been encoded into it. Without this, a re-present
+    // (saturation/overlay/prop change) that lands before the first capture completes — or after a
+    // resize reallocated the textures — samples undefined GPU memory: invisible on the Simulator,
+    // solid magenta on device.
+    if !uploadSnapshot && !dstHasBlurredContent { return }
 
     // Drawable sized to the crop (snapshot px); CAMetalLayer upsamples to bounds (spec §9.12).
     let cropW = max(1, Int(crop.width.rounded()))
@@ -419,10 +457,14 @@ public final class ParityBlurCoreView: UIView {
     if uploadSnapshot {
       if sigma > 0 {
         engine.gaussian(sigma: sigma).encode(commandBuffer: cb, sourceTexture: src, destinationTexture: dst)
+        dstHasBlurredContent = true
       } else if let blit = cb.makeBlitCommandEncoder() {
         blit.copy(from: src, to: dst)
         blit.endEncoding()
+        dstHasBlurredContent = true
       }
+      // NB: set only on a branch that actually encoded work into dst. If neither ran (no blit
+      // encoder), dst keeps whatever it had and stays untrusted.
     }
 
     // 2. Post pass: fractional crop + saturation + overlay into the drawable (spec §9.9-9.11).

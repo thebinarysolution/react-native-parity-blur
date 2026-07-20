@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -36,6 +37,21 @@ const BACKDROP_OPACITY_ANIMATED = true;
 /** 'live' matches the report; 'static' is the reporter's "also tried" case. */
 const BLUR_MODE: 'live' | 'static' = 'live';
 
+/**
+ * Android-only Z gotcha under test. `elevation` reorders siblings by Z INDEPENDENTLY of `zIndex`:
+ * ViewGroup sorts children by Z whenever any child has Z != 0, so content with elevation draws
+ * ABOVE a backdrop that has none — no matter what the tree order or zIndex says. A real dashboard
+ * (cards, FABs, app bars) is full of elevated views.
+ *
+ * TESTED on a Pixel 6a and it does NOT reproduce the report, for a reason worth recording: Z only
+ * reorders SIBLINGS WITHIN ONE PARENT. These cards live inside the ScrollView while the backdrop
+ * lives inside the sheet overlay — different parents — so no elevation on a card can lift it above
+ * the backdrop. For elevation to break a backdrop, the elevated view must be a sibling of the
+ * backdrop's own ancestor at the same level (e.g. elevation on the content ROOT itself). Kept as a
+ * knob because that variant is still worth testing against a real app's tree.
+ */
+const CONTENT_ELEVATION = 0;
+
 export default function SheetBackdropReproScreen() {
   const [open, setOpen] = useState(false);
 
@@ -49,12 +65,23 @@ export default function SheetBackdropReproScreen() {
     <View style={StyleSheet.absoluteFill}>
       <ScrollView contentContainerStyle={styles.scroll}>
         {Array.from({ length: 40 }).map((_, i) => (
-          <Text
-            key={i}
-            style={[styles.row, { color: ROW_COLORS[i % ROW_COLORS.length] }]}
-          >
-            Row {i} — content behind the sheet
-          </Text>
+          <View key={i} style={[styles.card, { elevation: CONTENT_ELEVATION }]}>
+            <Text
+              style={[styles.row, { color: ROW_COLORS[i % ROW_COLORS.length] }]}
+            >
+              Row {i} — content behind the sheet
+            </Text>
+            {/* An <Image> every few rows: the reporter's app is image-heavy, and live mode
+                captures via a software Canvas, which is exactly where the (still unproven)
+                HARDWARE-bitmap gap would bite. Text alone cannot expose it. */}
+            {i % 5 === 0 ? (
+              <Image
+                source={require('../assets/calibration/photo.png')}
+                style={styles.photo}
+                resizeMode="cover"
+              />
+            ) : null}
+          </View>
         ))}
       </ScrollView>
 
@@ -142,6 +169,13 @@ const ROW_COLORS = [
 
 const styles = StyleSheet.create({
   scroll: { padding: 24 },
+  card: {
+    backgroundColor: 'white',
+    borderRadius: 8,
+    marginVertical: 6,
+    padding: 8,
+  },
+  photo: { width: '100%', height: 160, marginVertical: 8, borderRadius: 8 },
   row: { fontSize: 22, marginVertical: 10, fontWeight: '700' },
   fab: {
     position: 'absolute',

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.4
+
+### Fixed
+
+- **iOS: solid magenta instead of a blur, on physical devices only.** The re-present path
+  (`representOnly()` — used when `saturation`, `overlayColor` or a radius-mask prop changes without
+  needing a recapture) guarded on `dstTexture != nil`. That is not the same question as *"does this
+  texture hold a blurred result?"*: the texture becomes non-nil the moment it is **allocated**, and
+  **Metal does not zero a freshly created texture**. The Gaussian blur is only encoded into it on a
+  capture pass (`uploadSnapshot: true`), so a re-present landing before the first capture finished —
+  or after a resize reallocated the textures — sampled **undefined GPU memory**.
+
+  The Simulator hands back zeroed pages, so this was invisible there; a real Apple GPU hands back
+  garbage, which renders as saturated magenta over the whole blur region. Reported as "works in the
+  simulator, pink screen on device", and it appeared transiently whenever the app re-rendered.
+
+  Fixed by tracking whether `dstTexture` actually holds an encoded blur: set only on a branch that
+  genuinely encoded work into it, cleared whenever the textures are reallocated, and required before
+  any re-present. This is a class of bug the Simulator structurally cannot catch — undefined memory
+  is only undefined on real hardware.
+
+### Documentation
+
+- `docs/DIAGNOSTICS.md`: added "it works in the Simulator but not on my device" as its own case, and
+  noted that **iOS Reduce Transparency** (Settings ▸ Accessibility ▸ Display & Text Size) makes a
+  `BlurView` render its flat `fallbackColor` with no blur at all — by design, defaulted OFF in the
+  Simulator and commonly ON for real users. The library now says so in the log, once per view.
+- Bug reports should include a **screenshot**, not only a log. A prose description of a visual defect
+  ("no blur" vs "weak blur" vs "a solid colour") cost a full round-trip to disambiguate.
+
 ## 0.1.3
 
 ### Fixed
