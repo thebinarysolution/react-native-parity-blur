@@ -90,3 +90,6 @@ example/ios/build/
 swift-tests/.build/
 .swiftpm/
 **/.swiftpm/
+
+# Local device harness — contains physical-device UUIDs/team id, must stay out of git
+scripts/devices.sh
