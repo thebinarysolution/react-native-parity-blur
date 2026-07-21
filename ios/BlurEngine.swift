@@ -35,7 +35,9 @@ final class BlurEngine {
   private var kernelCache: [Int: MPSImageGaussianBlur] = [:]
 
   /// Compiled post-process pipeline (crop + saturation + overlay — ColorPipeline.swift).
-  private var postPipeline: MTLComputePipelineState?
+  /// A RENDER pipeline (fullscreen triangle → fragment) that writes the drawable as a render
+  /// target; a compute kernel writing the bgra8Unorm drawable is dropped on some GPUs (A13).
+  private var postPipeline: MTLRenderPipelineState?
   private var linearSampler: MTLSamplerState?
 
   /// Per-window contexts, weakly keyed so they die with their window (plan §15.2, §26).
@@ -64,18 +66,24 @@ final class BlurEngine {
     return k
   }
 
-  /// Lazily compiled compute pipeline for the post pass. Returns nil on compile failure
+  /// Lazily compiled render pipeline for the post pass. Returns nil on compile failure
   /// (callers fall back to a plain blit — blur-only, no saturation/overlay — and log once).
-  func postProcessPipeline() -> MTLComputePipelineState? {
+  /// The color attachment is `.bgra8Unorm` to match the CAMetalLayer drawable.
+  func postProcessPipeline() -> MTLRenderPipelineState? {
     if let p = postPipeline { return p }
     do {
       let library = try device.makeLibrary(source: ColorPipeline.metalSource, options: nil)
-      guard let fn = library.makeFunction(name: "parityblur_post") else { return nil }
-      let p = try device.makeComputePipelineState(function: fn)
+      guard let vfn = library.makeFunction(name: "parityblur_vtx"),
+            let ffn = library.makeFunction(name: "parityblur_frag") else { return nil }
+      let desc = MTLRenderPipelineDescriptor()
+      desc.vertexFunction = vfn
+      desc.fragmentFunction = ffn
+      desc.colorAttachments[0].pixelFormat = .bgra8Unorm
+      let p = try device.makeRenderPipelineState(descriptor: desc)
       postPipeline = p
       return p
     } catch {
-      NSLog("[ParityBlur] post-process kernel compile failed: %@", "\(error)")
+      NSLog("[ParityBlur] post-process render pipeline compile failed: %@", "\(error)")
       return nil
     }
   }

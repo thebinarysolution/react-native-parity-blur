@@ -200,6 +200,22 @@ public final class ParityBlurCoreView: UIView {
   private var lastWatchedOrigin: CGPoint?
 
   private var warnedNoBlur = false
+  private var warnedDegraded = false
+
+  /// The compute post-process pipeline was unavailable AND the fallback blit could not cover the
+  /// whole drawable. Loud and unconditional: this is the state that used to render solid magenta,
+  /// and a silent skip would just look like "the blur froze".
+  private func warnDegradedPresentSkippedOnce(covers: Bool, w: Int, h: Int, cw: Int, ch: Int) {
+    guard !warnedDegraded else { return }
+    warnedDegraded = true
+    ParityBlurDebug.warnOnce(
+      "post-process compute pipeline unavailable on this device, and the fallback blit "
+        + (covers ? "encoder could not be created" : "covers only \(w)x\(h) of a \(cw)x\(ch) drawable")
+        + ". Skipping the present rather than showing undefined GPU memory (which renders as solid "
+        + "magenta on device). The blur will hold its previous frame. Please report this with your "
+        + "device model and iOS version — see docs/DIAGNOSTICS.md."
+    )
+  }
 
   /// blurRadius resolving to "no blur" means we faithfully present the captured snapshot 1:1 --
   /// which on screen is INDISTINGUISHABLE from the library doing nothing ("pure passthrough").
@@ -476,14 +492,20 @@ public final class ParityBlurCoreView: UIView {
       }
     }
     guard let pipeline = engine.postProcessPipeline(),
-          let sampler = engine.sampler(),
-          let compute = cb.makeComputeCommandEncoder() else {
-      // Degraded path: blit the integer-aligned crop (blur only). Logged once by the engine.
-      if let blit = cb.makeBlitCommandEncoder() {
-        let x = min(max(0, Int(crop.x)), dst.width - 1)
-        let y = min(max(0, Int(crop.y)), dst.height - 1)
-        let w = min(cropW, dst.width - x)
-        let h = min(cropH, dst.height - y)
+          let sampler = engine.sampler() else {
+      // Degraded path: blit the integer-aligned crop (blur only).
+      //
+      // A drawable is UNDEFINED memory until something writes to it, so it must never be presented
+      // unless the write covered ALL of it. Presenting a partially-written (or unwritten) drawable
+      // shows raw GPU garbage — commonly solid magenta on Apple silicon, invisible on the Simulator
+      // because it zeroes its pages. Skipping the present instead simply leaves the previous frame
+      // on screen, which is always the better failure.
+      let x = min(max(0, Int(crop.x)), max(0, dst.width - 1))
+      let y = min(max(0, Int(crop.y)), max(0, dst.height - 1))
+      let w = min(cropW, dst.width - x)
+      let h = min(cropH, dst.height - y)
+      let coversDrawable = (w == cropW && h == cropH && w > 0 && h > 0)
+      if coversDrawable, let blit = cb.makeBlitCommandEncoder() {
         blit.copy(
           from: dst, sourceSlice: 0, sourceLevel: 0,
           sourceOrigin: MTLOrigin(x: x, y: y, z: 0),
@@ -492,8 +514,10 @@ public final class ParityBlurCoreView: UIView {
           destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
         )
         blit.endEncoding()
+        cb.present(drawable)
+      } else {
+        warnDegradedPresentSkippedOnce(covers: coversDrawable, w: w, h: h, cw: cropW, ch: cropH)
       }
-      cb.present(drawable)
       cb.commit()
       return
     }
@@ -501,19 +525,25 @@ public final class ParityBlurCoreView: UIView {
     var uniforms = ColorPipeline.uniforms(
       cropX: crop.x, cropY: crop.y, saturation: saturation, overlay: overlayRGBA
     )
-    compute.setComputePipelineState(pipeline)
-    compute.setTexture(dst, index: 0)
-    compute.setTexture(drawable.texture, index: 1)
-    compute.setSamplerState(sampler, index: 0)
-    compute.setBytes(&uniforms, length: MemoryLayout<ColorPipeline.Uniforms>.stride, index: 0)
-    let tg = MTLSize(width: 8, height: 8, depth: 1)
-    let grid = MTLSize(
-      width: (cropW + tg.width - 1) / tg.width,
-      height: (cropH + tg.height - 1) / tg.height,
-      depth: 1
-    )
-    compute.dispatchThreadgroups(grid, threadsPerThreadgroup: tg)
-    compute.endEncoding()
+    // Post pass as a RENDER pass writing the drawable as a render target (spec §9.9-9.11). A
+    // fullscreen triangle covers every drawable pixel, so loadAction .dontCare is safe. Compute-
+    // writing the bgra8Unorm drawable via texture.write is silently dropped on some Apple GPUs
+    // (A13/iPhone 11 → undefined magenta); a render-target write is universally supported.
+    let rpd = MTLRenderPassDescriptor()
+    rpd.colorAttachments[0].texture = drawable.texture
+    rpd.colorAttachments[0].loadAction = .dontCare
+    rpd.colorAttachments[0].storeAction = .store
+    guard let render = cb.makeRenderCommandEncoder(descriptor: rpd) else {
+      // Encoder allocation failed: never present an unwritten drawable — leave the previous frame.
+      cb.commit()
+      return
+    }
+    render.setRenderPipelineState(pipeline)
+    render.setFragmentTexture(dst, index: 0)
+    render.setFragmentSamplerState(sampler, index: 0)
+    render.setFragmentBytes(&uniforms, length: MemoryLayout<ColorPipeline.Uniforms>.stride, index: 0)
+    render.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+    render.endEncoding()
 
     cb.present(drawable)
     cb.commit()

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.5
+
+### Fixed
+
+- **iOS: `BlurView` rendered as solid magenta on iPhone 11 (and other A13-class GPUs), while the
+  identical code rendered a correct blur on iPhone 14 Pro.** This is distinct from the 0.1.4 magenta
+  fix (a *transient* re-present race): this one was **persistent from the very first frame** on the
+  affected devices. Root cause: the post-process pass (fractional crop + saturation + overlay) was a
+  **compute kernel writing its result directly into the `.bgra8Unorm` CAMetalLayer drawable** via
+  `texture.write`. Compute-writing a bgra8Unorm *drawable* is silently dropped on some Apple GPUs
+  (verified on device on the A13/iPhone 11) — the drawable is then presented having never been
+  written, i.e. undefined GPU memory, which renders as saturated magenta on Apple silicon. The A16
+  (iPhone 14 Pro) happens to honor the same write, which is exactly why the bug was invisible on the
+  calibration reference device and only surfaced once the library ran on an older phone.
+
+  Fixed by making the post pass a **render pass**: a fullscreen-triangle vertex + fragment shader
+  that writes the drawable as a **render target** (universally supported across Apple GPU families)
+  instead of a compute `texture.write`. The fragment math is byte-identical to the previous kernel
+  (`[[position]].xy` is the pixel centre, equal to the kernel's `float2(gid) + 0.5`), so
+  cross-platform parity and the M5 calibration constants are unchanged. Verified on device: an
+  identical, correct blur now renders on both iPhone 11 (A13, previously magenta) and iPhone 14 Pro
+  (A16, no regression). General rule, now documented in the shader source: never
+  compute-`texture.write` a CAMetalLayer drawable — render into it.
+
 ## 0.1.4
 
 ### Fixed
